@@ -1,0 +1,23 @@
+library(ggplot2)
+library(readxl)
+library(dplyr)
+library(corrplot)
+library(tibble)
+library(vegan)
+library(ggfortify)
+BA_R <- read_excel("D:/Preidis Lab/Clinical Project/BA_R.xlsx")
+BA_R = BA_R %>% column_to_rownames(var = "SampleID")
+#
+BA_only = BA_R %>% select(-c(pUBA, pCBA, TotalBA, TotalConjBA, TotalUnconj, Primary, Secondary, Other, DOL, AGA)) 
+BA_only = BA_only %>% select (-c(chol, cholsamp, urso, PatientID, Group))
+pc_ba = prcomp(BA_only, scale. = TRUE)
+BA_only = t(BA_only)
+pcdf = as.data.frame(pc_ba[["rotation"]])
+pcdf = pcdf %>% rownames_to_column(var="SampleID")
+BA_R = rownames_to_column(BA_R, var = "SampleID")
+pcNorm = merge(pcdf, BA_R, by="SampleID") %>% column_to_rownames(var="SampleID") 
+ggplot(pcNorm, aes(PC1, PC2, color = pUBA)) + geom_point(size =3.5) + theme_classic() + labs(color = "% Unconjugated BAs"
+) + theme(plot.title = element_text(hjust = 0.5)) + theme(text=element_text(size=16,  family="Arial TT", face = "bold")) + theme(axis.line = element_line(colour = 'black', size = 1.5), axis.ticks = element_line(colour = "black", size = 1.5)
+) + theme(axis.text=element_text(size=14),
+          axis.title=element_text(size=16,face="bold", family = "Arial TT")) + theme(text=element_text(color="black"),axis.text=element_text(color="black")
+          ) + theme(axis.ticks.length=unit(.25, "cm")) 
