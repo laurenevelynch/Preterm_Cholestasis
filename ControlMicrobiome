@@ -1,0 +1,169 @@
+#load packages and make one physeq object
+library(dplyr)
+library(ggplot2)
+library(phyloseq)
+library(ggpubr)
+library(Rcmdr)
+library(readxl)
+library(tibble)
+library(vegan)
+library(ggthemes)
+library(rstatix)
+estcounts <- read.delim("D:/Preidis Lab/Clinical Project/Pool1206_Preidis_Deliverables/Deliverables/metaphlan3/estcounts.xls.txt", row.names=1, check.names = FALSE)
+taxa_clinical <- read_excel("D:/Preidis Lab/Clinical Project/taxa_clinical.xlsx") %>% tibble::column_to_rownames("otu")
+#samples FA-24-01-PP14 and 31-001-PP14 have 0 sum of rel abund, remove 0 reads before making phyloseq
+filtered_meta <- read_excel("D:/Preidis Lab/Clinical Project/R_codes/filtered_meta.xlsx") %>% tibble::column_to_rownames("SampleID")
+#more recoding - GA in levels, Adj GA in dif levels
+filtered_meta <- within(filtered_meta, {
+  Adj_GA_Bin <- Recode(Adj_GA_Wks, 
+                       '25:28.8 = "25-28"; 28.81:31.8 = "29-31"; 31.81:40 = "32-40"', 
+                       as.factor=TRUE)
+})
+filtered_meta <- within(filtered_meta, {
+  GA_Bin <- Recode(GA_Wks, 
+                   '24:26.99 = "24-26"; 27:28.99 = "27-28"; 29:30.99 = "29-30";', as.factor=TRUE)
+})
+filtered_meta <- mutate(filtered_meta, WOL_Int = as.integer(filtered_meta$WOL_Stool))
+filtered_meta <- within(filtered_meta, {
+  f_BW <- Recode(Birthweight, 'lo:1000 = "500-1000"; 1001:hi = "1001-1400"',
+                 as.factor=TRUE)
+})
+filtered_meta <- mutate(filtered_meta, f_WOL= as.factor(WOL_Int))
+filtered_meta <- within(filtered_meta, {
+  WOL_bin <- Recode(WOL_Stool, 
+                    '0:1.99 = "0-1"; 2:3.99 = "2-3"; 4:5.99 = "4-5"; 6:hi = "6+"; ; ;', 
+                    as.factor=TRUE)
+})
+filtered_meta$f_BW = factor(x = filtered_meta$f_BW, levels = c("500-1000", "1001-1400"))
+eC_matrix <- as.matrix(estcounts)
+taxa_matrix <- as.matrix(taxa_clinical)
+clinical_phylo <- merge_phyloseq(otu_table(eC_matrix, taxa_are_rows = TRUE), sample_data(filtered_meta), tax_table(taxa_matrix))
+#filter for noncholestatic babies
+norm_phylo <- subset_samples(clinical_phylo, Cholestatic == "No")
+#alpha diversity
+plot_richness(norm_phylo, measures = c("Observed"), x="f_WOL" ) + theme_few() +geom_boxplot(alpha= 0.3) + stat_compare_means(
+) + ggtitle("Shannon Diversity") + ylab("Observed OTUs") + xlab("Week of Life") +  geom_point(size = 3)
+obs = as.data.frame(estimate_richness(norm_phylo, measures = c("Observed")))
+write.csv(obs, "D:/Preidis Lab/Clinical Project/R_codes/obs1.csv")
+shan = as.data.frame(estimate_richness(norm_phylo, measures = c("Shannon")))
+write.csv(shan, "D:/Preidis Lab/Clinical Project/R_codes/shan.csv")
+#relative abundance file
+relab <-read.delim("D:/Preidis Lab/Clinical Project/Pool1206_Preidis_Deliverables/Deliverables/metaphlan3/relab.xls.txt", row.names=1, check.names = FALSE)
+ra_matrix <- as.matrix(relab)
+clin_relab <- merge_phyloseq(otu_table(ra_matrix, taxa_are_rows = TRUE), sample_data(filtered_meta), tax_table(taxa_matrix))
+norm_relab <- subset_samples(clin_relab, Cholestatic == "No")
+#PCA plot
+ord <- ordinate(norm_relab, method = "PCoA", distance = "bray")
+plot_ordination(norm_relab, ord)+ theme_few() +geom_point(aes(color = f_BW), size = 4) #+ facet_wrap(~WOL_Int)
+#correlation check for PC vs Adj GA plot
+#making new phyloseq with cholestatic baby and NORM group -> do this for each patient
+meta_w_chol = filter(filtered_meta, Cholestatic == "No") #| PatientID == "FA-19" )
+norm_w_chol = merge_phyloseq(otu_table(ra_matrix, taxa_are_rows = TRUE), sample_data(meta_w_chol), tax_table(taxa_matrix))
+new_meta_cor = rownames_to_column(meta_w_chol, var = "SampleID")
+#PC vs age in vegan 
+#make a table of weights (bc), assign chol samples very small weight (0.00001) and control weight of 1, upload and convert to a vector
+bc <- read_excel("D:/Preidis Lab/Clinical Project/R_codes/bc.xlsx")
+weights = as.numeric(bc$Weight)
+#use vegdist to make a distance matrix (bray) 
+bc.df = as.data.frame(otu_table(norm_w_chol))
+bc.df = t(bc.df)
+bc_dist = vegdist(bc.df)
+wcmd = wcmdscale(bc_dist, w = weights)
+x = wcmd[,1]
+y = wcmd[,2]
+plot(x,y)
+x.df = as.data.frame(x)
+x.df = rownames_to_column(x.df, var = "ID")
+age_chol = data.frame(Adjusted_GA= new_meta_attempt$Adjusted_GA, ID = new_meta_attempt$SampleID)
+age_chol = data.frame(Adjusted_GA= new_meta_cor$Adjusted_GA, ID = new_meta_cor$SampleID, WOL_Stool = new_meta_cor$WOL_bin, Patient= new_meta_cor$PatientID, Adj_GA_Bin = new_meta_cor$Adj_GA_Bin, Cholestatic = new_meta_cor$Cholestatic, Sample_Cholestatic = new_meta_cor$Sample_Cholestatic) 
+merge_chol = merge(x.df, age_chol, by = "ID") %>% tibble:: column_to_rownames("ID")
+write.csv(merge_chol, "D:/Preidis Lab/Clinical Project/R_codes/norm_pc.csv")
+ggplot(merge_chol, aes(x=Adjusted_GA, y=x)) +geom_point( size = 5, aes(color = Adjusted_GA)) + theme_classic2() + xlab(label = "Adjusted Gestational Age (Wks)") +geom_smooth(method = "lm", se = FALSE, color = "black", size = 2) + ylab("PC Axis 1"
+) + stat_regline_equation(label.y = 0.45) + stat_cor(label.y= 0.40) + xlim(25,40) + ylim(-.5, .6) + scale_color_gradient(breaks= c(25, 30, 35, 40), limits = c(25, 40), low = "blue", high = "red", name = "Adjusted G.A. (Wks)")
+#extracted PC1 for every CHOL and made excel (used code above)
+PC1_Chol <- read_excel("D:/Preidis Lab/Clinical Project/R_codes/PC1 Chol.xlsx")
+PC1_Chol$Coordinate = as.numeric(PC1_Chol$Coordinate)
+ggplot(PC1_Chol, aes(x= AGA, y= Coordinate)) +geom_point( size = 5, aes(color = AGA)) + theme_classic2() + xlab(label = "Adjusted Gestational Age (Wks)") +geom_smooth(method = "lm", se = FALSE, color = "black", size = 2) + ylab("PC Axis 1"
+) + stat_regline_equation(label.y = 0.45) + stat_cor(label.y= 0.40) + xlim(25,40) + ylim(-.5, .6) + scale_color_gradient(breaks= c(25, 30, 35, 40), limits = c(25, 40), low = "blue", high = "red", name = "Adjusted G.A. (Wks)")
+#Longitudinal analysis - getting relative abundances by taxonomic level and converting to data frame
+#phylum
+ra_phylum <- norm_relab %>% tax_glom(taxrank = "Phylum") %>% psmelt() %>% arrange(Phylum) %>% filter(Phylum %in% c("Proteobacteria", "Firmicutes", "Actinobacteria", "Bacteroidetes"))
+write.csv(ra_phylum, "D:/Preidis Lab/Clinical Project/R_codes/ra_phylum_n.csv")
+ra_phylum$Phylum = factor(ra_phylum$Phylum, levels = c("Proteobacteria", "Firmicutes", "Actinobacteria", "Bacteroidetes"))
+ggplot(ra_phylum, aes(y=Abundance, x= WOL_Stool, color = Phylum)) + geom_smooth(se= F, size = 2) + theme_classic()+ xlab("Adjusted Gestational Age (Wks)") + ylab("Relative Abundance") + ylim(-5,100
+) + theme(text=element_text(size=16,  family="Arial TT", face = "bold")) + theme(axis.line = element_line(colour = 'black', size = 1.5), axis.ticks = element_line(colour = "black", size = 1.5)
+) + theme(axis.text=element_text(size=14),
+          axis.title=element_text(size=16,face="bold", family = "Arial TT")) + theme(text=element_text(color="black"),axis.text=element_text(color="black")
+          ) + theme(axis.ticks.length=unit(.25, "cm"))       
+ggplot(ra_phylum, aes(y=Abundance, x=Adj_GA_Bin, fill=Phylum)) + geom_boxplot()
+#genus
+ra_genus <- norm_relab %>% tax_glom(taxrank = "Genus") #%>% psmelt() %>% arrange(Genus) #%>% filter(Phylum %in% c("Firmicutes"))
+ggplot(ra_genus, aes (x = DOL_Stool, y= Abundance)) + geom_smooth(se=F) + theme_few() + facet_wrap(~Genus)
+top_10g <- names(sort(taxa_sums(ra_genus), decreasing = TRUE)) [1:10]
+t10g <- prune_taxa(top_10g, ra_genus)
+ra_genus_10 <- t10g %>% psmelt() %>% arrange(Genus) 
+ggplot(ra_genus_10, aes(x = Adj_GA_Bin, y= Abundance)) +theme_few() + geom_boxplot(alpha = 0.6)  + facet_wrap(~Genus
+) + ggtitle("Adjusted Gestational Age vs. Relative Abundance") + xlab("Adjusted Gestational Age") + ylab("Relative Abundance"
+) + stat_compare_means()
+ggplot(ra_genus_10, aes(x=DOL_Stool, y=Abundance, color=Genus)) + geom_smooth(se= F, size = 2) + theme_classic()+ xlab("Adjusted Gestational Age (Wks)") + ylab("Relative Abundance") + ylim(-5,100
+) + theme(text=element_text(size=16,  family="Arial TT", face = "bold")) + theme(axis.line = element_line(colour = 'black', size = 1.5), axis.ticks = element_line(colour = "black", size = 1.5)
+) + theme(axis.text=element_text(size=14),
+          axis.title=element_text(size=16,face="bold", family = "Arial TT")) + theme(text=element_text(color="black"),axis.text=element_text(color="black")
+          ) + theme(axis.ticks.length=unit(.25, "cm"))    
+nkrusk_genus = as.data.frame(ra_genus %>% 
+                               group_by(Genus) %>% 
+                               kruskal_test(Abundance ~ WOL_bin))
+#
+#species
+ra_species <- norm_relab %>% tax_glom(taxrank = "Species") %>% psmelt() %>% arrange(Species) #%>% filter(Species %in% c("Bifidobacterium_breve" ))
+write.csv(ra_species, "D:/Preidis Lab/Clinical Project/R_codes/n_sepi.csv")
+krusk_species = as.data.frame(ra_species %>% 
+                                group_by(Species) %>% 
+                                kruskal_test(Abundance ~ Adj_GA_Bin)) %>% adjust_pvalue(method = "fdr")
+ggplot(ra_species, aes(x = Adj_GA_Bin, y=Abundance)) + geom_boxplot() + geom_point() + theme_few() + stat_compare_means()  + xlab("Adjusted Gestational Age") + geom_jitter()
+#Functional data, upload and create new phyloseq (no taxonomy table)
+genefam_norm <-  GeneFamilies_R.xls <- read.delim("D:/Preidis Lab/Clinical Project/Pool1206_Preidis_Deliverables/Deliverables/humann3/GeneFamilies_R.xls.txt", row.names=1, check.names = FALSE)
+genematrix <- as.matrix(genefam_norm)
+genefam_phylo <- merge_phyloseq(otu_table(genematrix, taxa_are_rows = TRUE), sample_data(filtered_meta))
+#subset for only control development
+norm_genes <- subset_samples(genefam_phylo, Cholestatic == "No")
+ord_genes <- ordinate(norm_genes, method = "NMDS", distance = "bray")
+plot_ordination(norm_genes, ord_genes, color = "Adj_GA_Bin") + theme_few() +geom_point(size=3)
+top_20_genes <- names(sort(taxa_sums(norm_genes), decreasing = TRUE)) [1:20]
+top20_gene <- prune_taxa(top_20_genes, norm_genes)
+plot_heatmap(top20_gene, method = "PCoA", distance = "bray")
+#gene in data frame
+gene_ra  = transform_sample_counts(norm_genes, function(x) x / sum(x) )
+gene_long <- gene_ra %>% psmelt() %>% filter(OTU %in% c("K01442"))
+write.csv(gene_long,"D:/Preidis Lab/Clinical Project/gene_long.csv" )
+krusk_genes = as.data.frame(gene_long %>% 
+                              group_by(OTU) %>% 
+                              kruskal_test(Abundance ~ Adj_GA_Bin))
+ggplot(gene_long, aes(x= WOL_bin, y = Abundance)) + theme_classic2() + geom_violin(draw_quantiles = c(0.5), size= 1, scale = 'width', 
+)+ xlab("Adjusted Gestational Age") + ylab("Relative Abundance") + ylim(0, 0.0015) + stat_compare_means(method = "kruskal")        
+ggplot(gene_long, aes(x= DOL_Stool, y = Abundance)) + theme_classic2() + geom_smooth() + geom_point()
+#
+ggplot(gene_long, aes(x= DOL_Stool, y = Abundance)) + theme_few() + facet_wrap(~PatientID)
+#pathways
+Pathways <- read.delim("D:/Preidis Lab/Clinical Project/Pool1206_Preidis_Deliverables/Deliverables/humann3/PathwaysAbundance.xls.txt", check.names = FALSE)
+pathways <- column_to_rownames(Pathways, var = "otu")
+pathways = as.matrix(pathways)
+pathways_phylo <- merge_phyloseq(otu_table(pathways, taxa_are_rows = TRUE), sample_data(filtered_meta))
+path_norm = subset_samples(pathways_phylo, Cholestatic == "No")
+path_ra  = transform_sample_counts(path_norm, function(x) x / sum(x) )
+#path_ra = filter_taxa(path_ra, function(x) mean(x) > 1e-5, TRUE)
+path_long_AAs <- path_ra %>% psmelt()%>% filter(OTU %in% c("ko00270", "ko00350", "ko00360"))
+plot_heatmap(pathways_phylo, distance = "bray", sample.order = "Adj_GA_Bin", sample.label = "Adj_GA_Bin")
+#kruskal wallis whole data set, can sort by P and look at top pathways
+library("rstatix")
+library("tidyverse")
+krusk_kegg = as.data.frame(path_long %>% 
+                             group_by(OTU) %>% 
+                             kruskal_test(Abundance ~ Adj_GA_Bin)) %>% adjust_pvalue(method = "fdr")
+path_long = path_ra %>% psmelt() #%>% filter(OTU %in% c("ko00121"))
+ggplot(path_long, aes(x= Adj_GA_Bin, y=Abundance)) + geom_point(size = 2) + theme_few() + geom_boxplot(alpha = 0.6
+) + stat_compare_means( method = "wilcox.test", label = "p.signif", ref.group = "25-28", hide.ns = F, size = 7) + facet_wrap(~OTU)
+otu_AA_names <- c('ko00270'= "Cysteine and methionine metabolism" , 'ko00350' = "Tyrosine metabolism", 'ko00360' = "Phenylalanine metabolism")
+ggplot(path_long_AAs, aes(x= Adj_GA_Bin, y= Abundance)) + geom_boxplot(alpha = 1) + theme_few() + facet_grid(~OTU, labeller = as_labeller(otu_AA_names)) + stat_compare_means(method = "wilcox.test", label = "p.signif", ref.group = "25-28", hide.ns = TRUE, size = 7, label.y = 0.02
+) + ylim(0, 0.022) + ylab("Relative Abundance") + xlab("Adjusted Gestational Age") + geom_point(size = 2) 
+
