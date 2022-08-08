@@ -1,0 +1,188 @@
+#load packages and make one physeq object
+library(dplyr)
+library(ggplot2)
+library(phyloseq)
+library(ggpubr)
+library(Rcmdr)
+library(readxl)
+library(tibble)
+library(vegan)
+library(ggthemes)
+library(rstatix)
+estcounts <- read.delim("D:/Preidis Lab/Clinical Project/Pool1206_Preidis_Deliverables/Deliverables/metaphlan3/estcounts.xls.txt", row.names=1, check.names = FALSE)
+taxa_clinical <- read_excel("D:/Preidis Lab/Clinical Project/taxa_clinical.xlsx") %>% tibble::column_to_rownames("otu")
+#samples FA-24-01-PP14 and 31-001-PP14 have 0 sum of rel abund, remove 0 reads before making phyloseq
+filtered_meta <- read_excel("D:/Preidis Lab/Clinical Project/R_codes/filtered_meta.xlsx") %>% tibble::column_to_rownames("SampleID")
+#more recoding - GA in levels, Adj GA in dif levels
+filtered_meta <- within(filtered_meta, {
+  Adj_GA_Bin <- Recode(Adj_GA_Wks, 
+                       '25:28.8 = "25-28"; 28.81:31.8 = "29-31"; 31.81:40 = "32-40"', 
+                       as.factor=TRUE)
+})
+filtered_meta <- within(filtered_meta, {
+  GA_Bin <- Recode(GA_Wks, 
+                   '24:26.99 = "24-26"; 27:28.99 = "27-28"; 29:30.99 = "29-30";', as.factor=TRUE)
+})
+filtered_meta <- mutate(filtered_meta, WOL_Int = as.integer(filtered_meta$WOL_Stool))
+filtered_meta <- within(filtered_meta, {
+  f_BW <- Recode(Birthweight, 'lo:1000 = "500-1000"; 1001:hi = "1001-1400"',
+                 as.factor=TRUE)
+})
+filtered_meta <- mutate(filtered_meta, f_WOL= as.factor(WOL_Int))
+filtered_meta <- within(filtered_meta, {
+  WOL_bin <- Recode(WOL_Int, 
+                    '0:1.1 = "0-1"; 1.9:3.1 = "2-3"; 3.9:hi = "4+"; ; ;', 
+                    as.factor=TRUE)
+})
+filtered_meta$f_BW = factor(x = filtered_meta$f_BW, levels = c("500-1000", "1001-1400"))
+filtered_meta$Urso_Given = as.factor(filtered_meta$Urso_Given)
+write.csv(filtered_meta, "D:/Preidis Lab/Clinical Project/filt_samp.csv")
+eC_matrix <- as.matrix(estcounts)
+taxa_matrix <- as.matrix(taxa_clinical)
+clinical_phylo <- merge_phyloseq(otu_table(eC_matrix, taxa_are_rows = TRUE), sample_data(filtered_meta), tax_table(taxa_matrix))
+#filter for cholestatic babies
+chol_phylo <- subset_samples(clinical_phylo, Cholestatic == "Yes")
+#alpha div plots
+plot_richness(chol_phylo, measures = c("Simpson"), x= "WOL_bin") + theme_few() +geom_boxplot(alpha= 0.3) + stat_compare_means(method = "wilcox", ref.group = "0-1", hide.ns = T, size = 6, label = "p.signif"
+) + ggtitle("Alpha Diversity in Cholestatic Neonates") + ylab("Simpson Index") + xlab("Week of Life") + geom_point(size = 3)
+obs_chol = as.data.frame(estimate_richness(chol_phylo, measures = c("Observed")))
+write.csv(obs_chol, "D:/Preidis Lab/Clinical Project/R_codes/obs_chol1.csv")
+shan_chol = as.data.frame(estimate_richness(chol_phylo, measures = c("Shannon")))
+write.csv(shan_chol, "D:/Preidis Lab/Clinical Project/R_codes/shan_chol.csv")
+#relative abundance file
+relab <-read.delim("D:/Preidis Lab/Clinical Project/Pool1206_Preidis_Deliverables/Deliverables/metaphlan3/relab.xls.txt", row.names=1, check.names = FALSE)
+ra_matrix <- as.matrix(relab)
+clin_relab <- merge_phyloseq(otu_table(ra_matrix, taxa_are_rows = TRUE), sample_data(filtered_meta), tax_table(taxa_matrix))
+chol_relab <- subset_samples(clin_relab, Cholestatic == "Yes")
+#
+#longitudinal analysis with phyloseq
+#phylum
+ra_phylum_chol <- chol_relab %>% tax_glom(taxrank = "Phylum") %>% psmelt() %>% arrange(Phylum)%>% filter(Phylum %in% c("Proteobacteria", "Firmicutes", "Actinobacteria", "Bacteroidetes"))
+ggplot(ra_phylum_chol, aes(y=Abundance, x= Adjusted_GA, color = Phylum))  + theme_classic() + ylim(-5, 100) + xlab("Adjusted Gestational Age (Wks)") + ylab("Relative Abundance") + geom_smooth(se= F, size = 2) + xlim(25,36
+) + ggtitle("Cholestatic") + theme(plot.title = element_text(hjust = 0.5)) + theme(text=element_text(size=14,  family="Arial TT", face = "bold")) + theme(axis.line = element_line(colour = 'black', size = 1.5), axis.ticks = element_line(colour = "black", size = 1.5)
+) + theme(axis.text=element_text(size=12),
+          axis.title=element_text(size=14,face="bold", family = "Arial TT")) + theme(text=element_text(color="black"),axis.text=element_text(color="black")
+          ) + theme(axis.ticks.length=unit(.25, "cm"))                                                                                                                                                                                                                             
+#genus
+ra_genus_chol <- chol_relab %>% tax_glom(taxrank = "Genus")# %>% psmelt() %>% arrange(Genus) 
+top_10g_c <- names(sort(taxa_sums(ra_genus_chol), decreasing = TRUE)) [1:10]
+t10gc <- prune_taxa(top_10g_c, ra_genus_chol)
+ra_genus_c10 <- t10gc %>% psmelt() %>% arrange(Genus) 
+ggplot(ra_genus_chol, aes(x= WOL_bin, y= Abundance)) + geom_boxplot() + theme_few() + geom_point() 
+ggplot(ra_genus_c10, aes(x = Adj_GA_Bin, y= Abundance)) +theme_few() + geom_boxplot(alpha = 0.6)  + facet_wrap(~Genus
+) + ggtitle("Adjusted Gestational Age vs. Relative Abundance") + xlab("Adjusted Gestational Age") + ylab("Relative Abundance"
+) + stat_compare_means()
+#
+#species
+ra_species_chol <- chol_relab %>% tax_glom(taxrank = "Species") %>% psmelt() %>% arrange(Species) %>% filter(Species %in% c("Bacteroides_fragilis"))
+write.csv(ra_species_chol, "D:/Preidis Lab/Clinical Project/R_codes/c_cperf.csv")
+ggplot(ra_species_chol, aes(x = Adj_GA_Bin, y=Abundance)) + geom_boxplot() + geom_point() + theme_few() + stat_compare_means(ref.group= "25-28", method = "wilcox.test", label = "p.signif", hide.ns = T, size = 6
+) + ggtitle("Relative Abundance of Clostridium perfringens") + xlab("Adjusted Gestational Age")
+#
+#Functional data, upload and create new phyloseq (no taxonomy table- genefam norm file isnt just norm)
+genefam_norm <-  GeneFamilies_R.xls <- read.delim("D:/Preidis Lab/Clinical Project/Pool1206_Preidis_Deliverables/Deliverables/humann3/GeneFamilies_R.xls.txt", row.names=1, check.names = FALSE)
+genematrix <- as.matrix(genefam_norm)
+genefam_phylo <- merge_phyloseq(otu_table(genematrix, taxa_are_rows = TRUE), sample_data(filtered_meta))
+gene_all_ra = transform_sample_counts(genefam_phylo, function(x) x / sum(x) )
+gene_all <- gene_all_ra %>% psmelt() %>% filter(OTU %in% c("K01442"))
+write.csv(gene_all,"D:/Preidis Lab/Clinical Project/genes.csv" )
+#subset for only normal development
+chol_genes <- subset_samples(genefam_phylo, Cholestatic == "Yes")
+#gene in data frame
+gene_ra_chol  = transform_sample_counts(chol_genes, function(x) x / sum(x) )
+gene_ra_chol = filter_taxa(gene_ra_chol, function(x) mean(x) > 1e-5, TRUE)
+gene_long_chol <- gene_ra_chol %>% psmelt() %>% filter(OTU %in% c("K01442"))
+ggplot(gene_long_chol, aes(x= Adj_GA_Bin, y = Abundance)) + theme_classic2() + geom_violin(draw_quantiles = c(0.5), size= 1, scale = 'width'
+)+ xlab("Adjusted Gestational Age") + ylab("Relative Abundance")  + ylim(0, 0.0015) + geom_jitter()                                                                                                                                                     
+#pathways
+Pathways <- read.delim("D:/Preidis Lab/Clinical Project/Pool1206_Preidis_Deliverables/Deliverables/humann3/PathwaysAbundance.xls.txt", check.names = FALSE)
+pathways <- column_to_rownames(Pathways, var = "otu")
+pathways = as.matrix(pathways)
+pathways_phylo <- merge_phyloseq(otu_table(pathways, taxa_are_rows = TRUE), sample_data(filtered_meta))
+path_all  = transform_sample_counts(pathways_phylo, function(x) x / sum(x) )
+path_chol = subset_samples(pathways_phylo, Cholestatic == "Yes")
+path_chol  = transform_sample_counts(path_chol, function(x) x / sum(x) )
+path_long_chol <- path_chol %>% psmelt() %>% filter(OTU %in% c("ko00121"))
+path_BA_chol = mutate(path_long_chol, A100 = Abundance*100)
+krusk_chol = as.data.frame(path_long_chol %>% 
+                             group_by(OTU) %>% 
+                             kruskal_test(Abundance ~ Adj_GA_Bin))
+#
+#
+#
+#only patients with Urso
+chol_samples = subset_samples(path_chol, Sample_Cholestatic == "Yes")
+path_chol_s  = transform_sample_counts(chol_samples, function(x) x / sum(x) )
+path_cholLONG <- path_chol_s %>% psmelt() %>% filter(OTU %in% c("ko00121"))
+ggplot(path_cholLONG, aes(Urso_Given, Abundance)) + geom_boxplot() + stat_compare_means()
+krusk_chol_samp = as.data.frame(ra_g_chols %>% 
+                                  group_by(Phylum) %>% 
+                                  kruskal_test(Abundance ~ Urso_Given))
+cholsamp_abs <- subset_samples(chol_phylo, Sample_Cholestatic == "Yes")
+plot_richness(cholsamp_abs, x="Urso_Given", measures = "Observed") + geom_boxplot() + stat_compare_means()
+cholsamp_relab <- subset_samples(clin_relab, Sample_Cholestatic == "Yes")
+
+ord <- ordinate(cholsamp_relab, method = "PCoA", distance = "bray")
+plot_ordination(cholsamp_relab, ord, color = "Urso_Given")
+
+ra_phylum_chols <- cholsamp_relab %>% tax_glom(taxrank = "Phylum") %>% psmelt() %>% arrange(Phylum)%>% filter(Phylum %in% c("Firmicutes", "Actinobacteria", "Proteobacteria"))
+write.csv(ra_phylum_chols, "D:/Preidis Lab/Clinical Project/R_codes/cholSphy.csv")
+ra_phylum_cholNO <- ra_phylum_chols %>% filter(Urso_Given %in% c("No"))
+ra_phylum_cholU <- ra_phylum_chols %>% filter(Urso_Given %in% c("Yes"))
+ggplot(ra_phylum_cholNO, aes(x=Adjusted_GA, y=Abundance, color=Phylum)) + geom_smooth(se= F, size = 2) + theme_classic()+ xlab("Adjusted Gestational Age (Wks)") + ylab("Relative Abundance") + xlim (25, 36) + ylim(-5,100
+) + theme(text=element_text(size=16,  family="Arial TT", face = "bold")) + theme(axis.line = element_line(colour = 'black', size = 1.5), axis.ticks = element_line(colour = "black", size = 1.5)
+) + theme(axis.text=element_text(size=14),
+          axis.title=element_text(size=16,face="bold", family = "Arial TT")) + theme(text=element_text(color="black"),axis.text=element_text(color="black")
+          ) + theme(axis.ticks.length=unit(.25, "cm"))    
+ggplot(ra_phylum_cholU, aes(x=Adjusted_GA, y=Abundance, color=Phylum)) + geom_boxplot() + theme_classic()+ xlab("Adjusted Gestational Age (Wks)") + ylab("Relative Abundance") + xlim (25, 36) + ylim(-5,100
+) + theme(text=element_text(size=16,  family="Arial TT", face = "bold")) + theme(axis.line = element_line(colour = 'black', size = 1.5), axis.ticks = element_line(colour = "black", size = 1.5)
+) + theme(axis.text=element_text(size=14),
+          axis.title=element_text(size=16,face="bold", family = "Arial TT")) + theme(text=element_text(color="black"),axis.text=element_text(color="black")
+          ) + theme(axis.ticks.length=unit(.25, "cm"))  
+#
+ggplot(ra_phylum_chols, aes(x=Urso_Given, y=Abundance, color=Phylum)) + geom_boxplot() + theme_classic()+ xlab("Adjusted Gestational Age (Wks)") + ylab("Relative Abundance") + xlim (25, 36) + ylim(-5,100
+) + theme(text=element_text(size=16,  family="Arial TT", face = "bold")) + theme(axis.line = element_line(colour = 'black', size = 1.5), axis.ticks = element_line(colour = "black", size = 1.5)
+) + theme(axis.text=element_text(size=14),
+          axis.title=element_text(size=16,face="bold", family = "Arial TT")) + theme(text=element_text(color="black"),axis.text=element_text(color="black")
+          ) + theme(axis.ticks.length=unit(.25, "cm"))    
+
+ggplot(ra_phylum_chols, aes(x= Urso_Given, y=Abundance, color = Phylum)) + geom_boxplot(lwd=1.3, fatten = .7)+ theme_classic() + ylab("Relative Abundance") + ylim(-5,100
+) + theme(text=element_text(size=16,  family="Arial TT", face = "bold")) + theme(axis.line = element_line(colour = 'black', size = 1.5), axis.ticks = element_line(colour = "black", size = 1.5)
+) + theme(axis.text=element_text(size=14),
+          axis.title=element_text(size=16,face="bold", family = "Arial TT")) + theme(text=element_text(color="black"),axis.text=element_text(color="black")
+          ) + theme(axis.ticks.length=unit(.25, "cm"))  +scale_x_discrete(labels=c("No" = "Cholestatic", "Yes" = "Cholestatic + UDCA")) + theme(axis.title.x = element_blank())
+
+write.csv(ra_phylum_chols, "D:/Preidis Lab/Clinical Project/quick.csv")
+ggplot(ra_phylum_chols, aes(Urso_Given, Abundance)) + geom_boxplot() + stat_compare_means() + theme_classic() + geom_point() + geom_jitter(width = 0.1)
+ra_g_chols <- cholsamp_relab %>% tax_glom(taxrank = "Genus") %>% psmelt() %>% arrange(Genus)%>% filter(Genus %in% c("Staphylococcus"))
+ggplot(ra_g_chols, aes(Urso_Given, Abundance)) + geom_boxplot() + stat_compare_means() + geom_point()
+#
+#
+#
+#Pairwise
+urso_pw <- subset_samples(clinical_phylo, Treatment == c("Untreated") | Treatment == c("Treated")) # | Treatment == c("Control"))
+plot_richness(urso_pw, measures = c("Simpson"), x= "Treatment") + stat_compare_means(method = "wilcox.test", paired = F) + geom_boxplot()
+urso_ra <- subset_samples(clin_relab, Treatment == c("Untreated") | Treatment == c("Treated")) # | Treatment == c("Control"))
+ord <- ordinate(urso_ra, method = "PCoA", distance = "bray")
+plot_ordination(urso_ra, ord, color = "Treatment")
+urso_sp <- urso_ra %>% tax_glom(taxrank = "Species") %>% psmelt() %>% arrange(Species) %>% filter(Species %in% c("Bifidobacterium_breve" ))
+write.csv(urso_sp, "D:/Preidis Lab/Clinical Project/R_codes/ursoBB.csv")
+krusk_species = as.data.frame(urso_sp %>% 
+                                group_by(Species) %>% 
+                                kruskal_test(Abundance ~ Treatment)) %>% adjust_pvalue(method = "fdr")
+ggplot(urso_sp, aes(Treatment, Abundance)) + geom_boxplot() + stat_compare_means(method = "wilcox.test") + geom_point() + geom_jitter()
+urso_path = subset_samples(path_all, Treatment == c("Untreated") | Treatment == c("Treated") | Treatment == c("Control"))
+ursoLONG <- urso_path %>% psmelt() %>% filter(OTU %in% c("ko00121"))
+urso_pw = as.data.frame(ursoLONG %>% 
+                          group_by(OTU) %>% 
+                          kruskal_test(Abundance ~ Treatment)) %>% adjust_pvalue(method = "fdr")
+ggplot(ursoLONG, aes(x=Treatment, y=Abundance)) + geom_boxplot() + stat_compare_means(method = "wilcox", paired = F)
+urso_gene <- subset_samples(chol_genes, Treatment == c("Untreated") | Treatment == c("Treated"))
+ursoGENE <- urso_gene %>% psmelt() %>% filter(OTU %in% c("K01442"))
+urso_g = as.data.frame(ursoGENE %>% 
+                         group_by(OTU) %>% 
+                         kruskal_test(Abundance ~ Treatment)) %>% adjust_pvalue(method = "fdr")
+urso_p <- urso_ra %>% tax_glom(taxrank = "Phylum") %>% psmelt() %>% arrange(Phylum) %>% filter(Phylum %in% c("Firmicutes", "Proteobacteria", "Actinobacteria" ))
+write.csv(urso_p, "D:/Preidis Lab/Clinical Project/R_codes/ursoP.csv")
+ggplot(urso_p, aes(Treatment, Abundance)) + geom_boxplot() + stat_compare_means(method = "wilcox.test") + geom_point() + facet_wrap(~Phylum)
+#
